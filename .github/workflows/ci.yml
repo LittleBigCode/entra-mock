@@ -1,0 +1,122 @@
+# CI: tests + lint on every push/PR, then build & push the container image to
+# GitHub Container Registry (ghcr.io) on main and on version tags.
+#
+# Published image: ghcr.io/littlebigcode/entra-mock
+#   :latest   — every push to main
+#   :X.Y.Z    — on tags `vX.Y.Z`
+#   :sha-…    — every pushed build (traceability)
+#
+# The image is smoke-tested (container boots, /health answers, an
+# unauthenticated /v1.0/groups is refused, the OAuth2 flow yields a usable
+# token) BEFORE being pushed.
+#
+# ⚠️ After the FIRST publish, the GHCR package must be PUBLIC: the Harbor
+# ghcr-proxy pulls anonymously, and a private package lands consumer pods in
+# ImagePullBackOff.
+
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+    tags: ["v*.*.*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Tests & lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install the environment
+        run: uv sync --frozen
+
+      - name: Ruff (lint + format)
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Mypy (strict)
+        run: uv run mypy src/entra_mock
+
+      - name: Pytest (OAuth2 flow, pagination, dialect, dataset)
+        run: uv run pytest tests/
+
+  image:
+    name: Build & push image (GHCR)
+    needs: tests
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata (tags & OCI labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=sha
+
+      - name: Build (local, for the smoke test)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: entra-mock:smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test — the image must boot and speak the dialect
+        run: |
+          docker run -d --rm --name smoke -p 8000:8000 entra-mock:smoke
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8000/health > /dev/null && break
+            sleep 1
+          done
+          curl -sf http://localhost:8000/health
+          # Unauthenticated Graph call → 401 in the Graph error envelope.
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/v1.0/groups)" = "401"
+          # The client-credentials flow yields a token that opens /v1.0/groups.
+          TENANT=00000000-0000-0000-0000-000000000000
+          TOKEN=$(curl -s -X POST \
+            -d "client_id=$TENANT" -d 'client_secret=change-me-entra' \
+            -d 'grant_type=client_credentials' \
+            "http://localhost:8000/$TENANT/oauth2/v2.0/token" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+          test -n "$TOKEN"
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
+            http://localhost:8000/v1.0/groups)" = "200"
+          docker stop smoke
+
+      - name: Push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha

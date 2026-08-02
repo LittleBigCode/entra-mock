@@ -1,0 +1,28 @@
+# Local deployment in one command:
+#
+#     docker compose up --build
+#
+# The mock answers on http://localhost:8011 (the insights360 port allocation:
+# boond 8010, entra 8011, linkedin 8012, ga 8013):
+#
+#     curl http://localhost:8011/health
+#     TOKEN=$(curl -s -X POST \
+#       -d 'client_id=00000000-0000-0000-0000-000000000000' \
+#       -d 'client_secret=change-me-entra' \
+#       -d 'grant_type=client_credentials' \
+#       http://localhost:8011/00000000-0000-0000-0000-000000000000/oauth2/v2.0/token \
+#       | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+#     curl -H "Authorization: Bearer $TOKEN" http://localhost:8011/v1.0/groups
+#
+# The healthcheck ships INSIDE the image, so consumers can rely on
+# `depends_on: condition: service_healthy`.
+services:
+  entra-mock:
+    build: .
+    image: entra-mock:0.1.0
+    ports:
+      - "8011:8000"
+    environment:
+      # Page size 1 by default (see README): every group with more than one
+      # member is paginated, so the @odata.nextLink path is always exercised.
+      ENTRA_MOCK_PAGE_SIZE: "1"

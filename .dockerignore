@@ -1,0 +1,18 @@
+# The build context only carries what the Dockerfile COPYs:
+# pyproject.toml, uv.lock, README.md, src/.
+.git
+.github
+.venv
+.pytest_cache
+.ruff_cache
+.mypy_cache
+__pycache__
+*.pyc
+tests/
+docs/
+contracts/
+Makefile
+docker-compose.yml
+Dockerfile
+.dockerignore
+.gitignore
