@@ -71,19 +71,32 @@ BoondManager's static credential.
 
 Four groups, one per authorization rule of insights360
 (`grp-bi-rh`, `grp-bi-sales`, `grp-bi-direction` → rule 3, scope by group;
-`grp-comex` → rule 4, full visibility). The UPNs line up with the
-BoondManager mock's dataset, and two of them exist **only** to exercise the
-join between the two sources:
+`grp-comex` → rule 4, full visibility).
 
-- **`ext.consultant@ent.fr`** — a group member who is **absent from the HR
+⚠️ **The UPNs are those of boondmanager-mock's `realiste` dataset, and that is
+load-bearing.** The UPN is the *only* join key between the directory and the
+HR system: a domain that drifts produces no error, it produces zero
+memberships — hence zero visibility, hence tests that pass by vacuity. A
+dataset change on the BoondManager side breaks this file, and that is
+intended: better a red test than an authorization model whose edge cases have
+silently ceased to exist.
+
+Two of those UPNs exist **only** to exercise the join between the two sources:
+
+- **`ext.consultant@boreal-conseil.example`** — a group member who is **absent from the HR
   system**. The pipeline must drop it at the join, never emit a row with an
   unknown key (which would degrade the inner-layer predicate into "no
   filter");
-- **`tom.absent@ent.fr`** — present in HR, member of **no group**. He must see
+- **`kevin.silva@boreal-conseil.example`** — present in HR, member of **no group**. He must see
   only himself (rule 1).
 
-`grp-comex` deliberately overlaps `grp-bi-direction`: that overlap is what
-exercises the deduplication of the rule union.
+`grp-comex` deliberately overlaps `grp-bi-direction` (`arthur.ivanov`, the top
+of the hierarchy, the only one without a manager): the Comex grants him *every*
+collaborator — Nantes included — while the outer RLS perimeter of `bi_rh` and
+`bi_sales` excludes Nantes. That couple is what makes the `inner ⊆ outer`
+invariant do real work: it holds *because* RLS trims, and would fail loudly if
+the inner query were ever run outside its role. Without it, the invariant would
+be true by vacuity.
 
 **Page size defaults to 1** (`ENTRA_MOCK_PAGE_SIZE`). That is not a
 performance choice: with a page of one, *every* group of more than one member
@@ -100,7 +113,7 @@ member — silently, without any error.
 | `ENTRA_CLIENT_SECRET` | `change-me-entra` | client secret |
 | `ENTRA_MOCK_TOKEN_TTL` | `3600` | token lifetime in seconds — lower it to rehearse renewal |
 | `ENTRA_MOCK_PAGE_SIZE` | `1` | members per page (see above) |
-| `ENTRA_MOCK_UPN_DOMAIN` | `ent.fr` | UPN domain of the dataset |
+| `ENTRA_MOCK_UPN_DOMAIN` | `boreal-conseil.example` | UPN domain — must match the BoondManager mock's dataset (see above) |
 | `ENTRA_MOCK_HOST` / `_PORT` | `0.0.0.0` / `8000` | uvicorn bind |
 
 ## Development
@@ -112,5 +125,12 @@ make lint        # ruff + mypy --strict
 make contract    # regenerate contracts/msgraph.openapi.yaml
 ```
 
-Version `0.1.0` is bumped in lockstep in `pyproject.toml`,
+The version is bumped in lockstep in `pyproject.toml`,
 `src/entra_mock/app.py` (`FastAPI(version=…)`) and `docker-compose.yml`.
+
+## Versions
+
+| Version | Dataset |
+|---|---|
+| `0.2.0` | UPNs of boondmanager-mock's **`realiste`** dataset (`@boreal-conseil.example`) — the current one |
+| `0.1.0` | the historical `@ent.fr` dataset, superseded; it joins with nothing since boondmanager-mock 0.3.0 |

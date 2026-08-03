@@ -5,8 +5,8 @@ jointure avec le SIRH. Les quatre groupes correspondent aux quatre règles du
 modèle d'autorisation d'insights360, et deux UPN existent uniquement pour
 éprouver les bords :
 
-  • `ext.consultant@ent.fr` — membre d'un groupe, ABSENT du SIRH ;
-  • `tom.absent@ent.fr`     — présent au SIRH, membre d'AUCUN groupe.
+  • `ext.consultant@boreal-conseil.example` — membre d'un groupe, ABSENT du SIRH ;
+  • `kevin.silva@boreal-conseil.example`     — présent au SIRH, membre d'AUCUN groupe.
 
 Si ces deux-là disparaissaient, la suite d'autorisation aval passerait sans
 plus rien démontrer.
@@ -32,17 +32,30 @@ def test_les_quatre_groupes_des_quatre_regles(client, auth):
     assert noms == {"grp-bi-rh", "grp-bi-sales", "grp-bi-direction", "grp-comex"}
 
 
+def test_le_domaine_est_celui_du_jeu_realiste(client, auth):
+    """L'UPN est la SEULE clé de jointure entre l'annuaire et le SIRH.
+
+    Un domaine qui diverge de boondmanager-mock ne produit aucune erreur : il
+    produit zéro appartenance, donc zéro visibilité, donc une suite
+    d'autorisation verte PAR VACUITÉ. Ce test est le garde-fou — il doit
+    casser bruyamment le jour où l'un des deux jeux bouge sans l'autre.
+    """
+    membres = _tous_les_membres(client, auth)
+    assert membres, "aucun membre servi"
+    assert all(upn.endswith("@boreal-conseil.example") for upn in membres), membres
+
+
 def test_le_membre_absent_du_sirh_est_present(client, auth):
     """Il DOIT être servi : le pipeline doit le laisser tomber à la jointure,
     jamais produire une ligne à clé inconnue — ce qui ferait dégénérer le
     prédicat de la couche interne en « pas de filtre »."""
-    assert "ext.consultant@ent.fr" in _tous_les_membres(client, auth)
+    assert "ext.consultant@boreal-conseil.example" in _tous_les_membres(client, auth)
 
 
 def test_le_collaborateur_sans_groupe_est_absent(client, auth):
-    """`tom.absent` n'appartient à AUCUN groupe : il ne doit voir que
+    """`kevin.silva` n'appartient à AUCUN groupe : il ne doit voir que
     lui-même (règle 1). Sa présence ici invaliderait le cas limite."""
-    assert "tom.absent@ent.fr" not in _tous_les_membres(client, auth)
+    assert "kevin.silva@boreal-conseil.example" not in _tous_les_membres(client, auth)
 
 
 def test_comex_recoupe_direction(client, auth):

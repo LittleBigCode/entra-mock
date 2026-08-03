@@ -18,8 +18,8 @@ Le jeu de données est aligné sur le profil `insights360` de boondmanager-mock 
 les mêmes UPN, et surtout les deux cas limites qui n'existent QUE dans la
 jonction des deux sources —
 
-  • `ext.consultant@ent.fr` : membre d'un groupe, ABSENT du SIRH ;
-  • `tom.absent@ent.fr`     : présent au SIRH, membre d'AUCUN groupe.
+  • `ext.consultant@boreal-conseil.example` : dans un groupe, ABSENT du SIRH ;
+  • `kevin.silva@boreal-conseil.example`     : au SIRH, dans AUCUN groupe.
 """
 
 from __future__ import annotations
@@ -33,7 +33,11 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-UPN_DOMAIN = os.environ.get("ENTRA_MOCK_UPN_DOMAIN", "ent.fr")
+# Le domaine du jeu `realiste` de boondmanager-mock. L'UPN est la SEULE clé de
+# jointure entre l'annuaire et le SIRH : un domaine qui diverge ne produit pas
+# d'erreur, il produit zéro appartenance — donc zéro visibilité, donc des tests
+# verts par vacuité.
+UPN_DOMAIN = os.environ.get("ENTRA_MOCK_UPN_DOMAIN", "boreal-conseil.example")
 TENANT_ID = os.environ.get("ENTRA_TENANT_ID", "00000000-0000-0000-0000-000000000000")
 CLIENT_ID = os.environ.get("ENTRA_CLIENT_ID", "00000000-0000-0000-0000-000000000000")
 CLIENT_SECRET = os.environ.get("ENTRA_CLIENT_SECRET", "change-me-entra")
@@ -59,7 +63,9 @@ GROUPES: dict[str, dict[str, Any]] = {
     "11111111-0000-0000-0000-000000000001": {
         "displayName": "grp-bi-rh",
         "membres": [
-            _d("sophie.m@{d}"),
+            # Manager de niveau 2, agence Paris. Sa portée de groupe (règle 3)
+            # lui donne les rattachés de son périmètre.
+            _d("yuki.lambert@{d}"),
             # Membre d'un groupe, INCONNU du SIRH. Le pipeline doit le laisser
             # tomber à la jointure sur dim_collaborateur, jamais produire une
             # ligne à clé inconnue — ce qui ferait dégénérer le prédicat interne
@@ -69,22 +75,35 @@ GROUPES: dict[str, dict[str, Any]] = {
     },
     "11111111-0000-0000-0000-000000000002": {
         "displayName": "grp-bi-sales",
-        "membres": [_d("marc.leroy@{d}")],
+        "membres": [_d("lars.marchand@{d}")],
     },
     "11111111-0000-0000-0000-000000000003": {
         "displayName": "grp-bi-direction",
-        "membres": [_d("claire.durand@{d}")],
+        "membres": [_d("arthur.ivanov@{d}")],
     },
     "11111111-0000-0000-0000-000000000004": {
         "displayName": "grp-comex",
-        "membres": [_d("claire.durand@{d}")],
+        # Le sommet de la hiérarchie, seul sans manager. Le Comex lui donne
+        # TOUS les collaborateurs, Nantes compris — alors que le périmètre RLS
+        # externe de bi_rh et bi_sales exclut Nantes. C'est ce couple qui fait
+        # travailler l'invariant `inner ⊆ outer` : il tient PARCE QUE le RLS
+        # rogne, et échouerait bruyamment si la requête interne était un jour
+        # exécutée hors du rôle. Sans lui, l'invariant serait vrai par vacuité.
+        "membres": [_d("arthur.ivanov@{d}")],
     },
 }
 
-# `tom.absent@ent.fr` n'apparaît DÉLIBÉRÉMENT nulle part : présent au SIRH,
-# membre d'aucun groupe. Il ne doit voir que lui-même (règle 1).
+# `kevin.silva@…` n'apparaît DÉLIBÉRÉMENT nulle part : présent au SIRH, membre
+# d'aucun groupe. Il ne doit voir que lui-même (règle 1).
+#
+# ⚠️ Ces UPN sont ceux du jeu `realiste` de boondmanager-mock. Ils ne sont PAS
+#    arbitraires : chacun est choisi pour la propriété qu'il rend testable
+#    (sommet sans manager, agence hors périmètre, membre hors SIRH). Un
+#    changement de jeu de données côté mock BoondManager casse ce fichier — et
+#    c'est voulu : mieux vaut un test rouge qu'un modèle d'autorisation dont les
+#    cas limites ont silencieusement cessé d'exister.
 
-app = FastAPI(title="Microsoft Graph mock (Entra groups)", version="0.1.0")
+app = FastAPI(title="Microsoft Graph mock (Entra groups)", version="0.2.0")
 
 
 def _erreur(status: int, code: str, message: str) -> JSONResponse:
