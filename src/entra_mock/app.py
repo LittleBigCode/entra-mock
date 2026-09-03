@@ -238,6 +238,54 @@ def _membre_autre(brut: dict[str, Any]) -> dict[str, Any]:
     return objet
 
 
+def _membres_transitifs(group_id: str, vus: set[str] | None = None) -> list[dict[str, Any]]:
+    """L'appartenance EFFECTIVE — les groupes imbriqués aplatis.
+
+    ┌─ POURQUOI CET ENDPOINT EXISTE, MESURÉ CHEZ UN VRAI FOURNISSEUR ────────┐
+    │ `/members` ne rend que les membres DIRECTS. Sondé le 2026-09-03 contre │
+    │ un annuaire d'entreprise RÉEL : un groupe transverse y rend UNE         │
+    │ personne en direct et une TRENTAINE en transitif — il contient dix-neuf │
+    │ groupes imbriqués. Quatre groupes de direction régionaux en perdent     │
+    │ trois chacun.                                                            │
+    │                                                                         │
+    │ Autrement dit, un consommateur qui lit `/members` pour construire une   │
+    │ ACL prive 97 % des ayants droit de leur périmètre sur ce groupe-là —    │
+    │ sans une erreur, sans un avertissement.                                 │
+    │                                                                         │
+    │ Le mock ne servait pas cet endpoint : le consommateur ne POUVAIT donc   │
+    │ pas se corriger sans casser sa stack locale. C'est une absence qui      │
+    │ enferme dans le défaut, pas seulement qui le masque.                    │
+    └─────────────────────────────────────────────────────────────────────────┘
+
+    Graph rend les groupes imbriqués EN PLUS de leurs membres : l'objet groupe
+    reste dans la collection. On fait pareil — un consommateur qui filtre sur
+    l'UPN les écarte de toute façon, et les omettre cacherait la structure.
+
+    `vus` coupe les cycles : Entra autorise A ∋ B ∋ A, et une récursion naïve
+    y tournerait indéfiniment.
+    """
+    vus = set() if vus is None else vus
+    if group_id in vus:
+        return []
+    vus.add(group_id)
+
+    rendus: list[dict[str, Any]] = []
+    for membre in GROUPES[group_id]["membres"]:
+        if isinstance(membre, dict):
+            rendus.append(_membre_autre(membre))
+            if membre["type"] == "#microsoft.graph.group" and membre["id"] in GROUPES:
+                rendus.extend(_membres_transitifs(membre["id"], vus))
+        else:
+            rendus.append(_membre_utilisateur(membre))
+
+    # Dédoublonnage : une personne membre de deux sous-groupes n'apparaît
+    # qu'une fois, comme chez Graph.
+    uniques: dict[str, dict[str, Any]] = {}
+    for objet in rendus:
+        uniques.setdefault(objet["id"], objet)
+    return list(uniques.values())
+
+
 def _membres_rendus(group_id: str) -> list[dict[str, Any]]:
     return [
         _membre_autre(m) if isinstance(m, dict) else _membre_utilisateur(m)
@@ -525,6 +573,17 @@ def groupes(request: Request) -> JSONResponse:
     return JSONResponse(corps)
 
 
+@app.get("/v1.0/groups/{group_id}/transitiveMembers")
+def membres_transitifs(group_id: str, request: Request) -> JSONResponse:
+    """L'appartenance EFFECTIVE, groupes imbriqués aplatis — comme Graph.
+
+    Même enveloppe, même curseur opaque, même `$select` que `/members` : seule
+    la composition de la collection change. C'est ce qui permet à un
+    consommateur de basculer d'un chemin à l'autre sans réécrire sa pagination.
+    """
+    return _servir_membres(group_id, request, transitif=True)
+
+
 @app.get("/v1.0/groups/{group_id}/members")
 def membres(group_id: str, request: Request) -> JSONResponse:
     """Membres d'un groupe, paginés par curseur opaque — comme Graph.
@@ -538,13 +597,19 @@ def membres(group_id: str, request: Request) -> JSONResponse:
     bien un groupe imbriqué qu'un principal de service. Les deux sont sans UPN,
     et un consommateur doit les traiter différemment.
     """
+    return _servir_membres(group_id, request, transitif=False)
+
+
+def _servir_membres(group_id: str, request: Request, *, transitif: bool) -> JSONResponse:
+    """Le corps commun aux deux collections de membres."""
     if (refus := _refus(request)) is not None:
         return refus
     if group_id not in GROUPES:
         return _erreur_graph(404, "Request_ResourceNotFound", f"group {group_id} does not exist")
 
     depuis = int(request.query_params.get("$skiptoken", "0"))
-    tous = _membres_rendus(group_id)
+    tous = _membres_transitifs(group_id) if transitif else _membres_rendus(group_id)
+    chemin = "transitiveMembers" if transitif else "members"
     try:
         valeurs = _projeter(
             tous[depuis : depuis + PAGE_SIZE],
@@ -565,7 +630,7 @@ def membres(group_id: str, request: Request) -> JSONResponse:
     suivant = depuis + PAGE_SIZE
     if suivant < len(tous):
         corps["@odata.nextLink"] = _lien_suivant(
-            request, f"/v1.0/groups/{group_id}/members", suivant
+            request, f"/v1.0/groups/{group_id}/{chemin}", suivant
         )
     return JSONResponse(corps)
 

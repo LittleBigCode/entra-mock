@@ -343,3 +343,82 @@ def test_le_select_est_valide_contre_le_TYPE_et_non_contre_la_page(client, auth)
     # l'omet, il ne rend pas une clé nulle.
     assert all("userPrincipalName" not in m for m in r.json()["value"])
     assert all(set(m) <= {"id", "@odata.type"} for m in r.json()["value"])
+
+
+def test_transitiveMembers_aplatit_ce_que_members_perd(client, auth):
+    """LE test qui justifie l'endpoint, chiffré chez un vrai fournisseur.
+
+    Sondé le 2026-09-03 contre un annuaire d'entreprise réel : un groupe
+    transverse y rend UNE personne en direct et une TRENTAINE en transitif —
+    dix-neuf groupes imbriqués. Quatre groupes de direction régionaux en
+    perdent trois chacun.
+
+    Un consommateur qui lit `/members` pour construire une ACL prive donc la
+    quasi-totalité des ayants droit de leur périmètre, sans une erreur et sans
+    un avertissement. Le mock ne servant pas cet endpoint, il ne POUVAIT pas se
+    corriger sans casser sa stack locale : une absence qui enferme dans le
+    défaut, pas seulement qui le masque.
+
+    `grp-bi-imbrique` reproduit la forme en miniature : aucune personne en
+    direct, une en transitif.
+    """
+    groupes = {g["displayName"]: g["id"] for g in tous_les_groupes(client, auth)}
+    gid = groupes["grp-bi-imbrique"]
+
+    def personnes(chemin: str) -> set[str]:
+        vus: set[str] = set()
+        url = f"/v1.0/groups/{gid}/{chemin}"
+        pages = 0
+        while url and pages < 20:
+            corps = client.get(url, headers=auth).json()
+            vus.update(m["userPrincipalName"] for m in corps["value"] if m.get("userPrincipalName"))
+            suivant = corps.get("@odata.nextLink")
+            url = suivant.replace("http://testserver", "") if suivant else ""
+            pages += 1
+        return vus
+
+    directs, transitifs = personnes("members"), personnes("transitiveMembers")
+    assert directs == set(), "le groupe imbriqué ne doit avoir AUCUN membre direct"
+    assert transitifs == {"lars.marchand@boreal-conseil.example"}, transitifs
+
+
+def test_transitiveMembers_rend_AUSSI_les_groupes_imbriques(client, auth):
+    """Graph garde l'objet groupe dans la collection, en plus de ses membres.
+
+    Les omettre cacherait la structure de l'annuaire à un consommateur qui
+    voudrait la diagnostiquer — et ferait diverger le mock du fournisseur sur
+    un point observable.
+    """
+    groupes = {g["displayName"]: g["id"] for g in tous_les_groupes(client, auth)}
+    corps = client.get(
+        f"/v1.0/groups/{groupes['grp-bi-imbrique']}/transitiveMembers?$skiptoken=0", headers=auth
+    ).json()
+    # La page vaut 1 : on parcourt pour voir tous les types.
+    types = set()
+    url = f"/v1.0/groups/{groupes['grp-bi-imbrique']}/transitiveMembers"
+    pages = 0
+    while url and pages < 20:
+        corps = client.get(url, headers=auth).json()
+        types.update(m["@odata.type"] for m in corps["value"])
+        suivant = corps.get("@odata.nextLink")
+        url = suivant.replace("http://testserver", "") if suivant else ""
+        pages += 1
+    assert "#microsoft.graph.group" in types
+    assert "#microsoft.graph.user" in types
+
+
+def test_transitiveMembers_ne_boucle_pas_sur_un_cycle(client, auth, monkeypatch):
+    """Entra autorise A ∋ B ∋ A ; une récursion naïve y tournerait sans fin."""
+    groupes = {g["displayName"]: g["id"] for g in tous_les_groupes(client, auth)}
+    imbrique, sales = groupes["grp-bi-imbrique"], groupes["grp-bi-sales"]
+
+    # On referme le cycle : grp-bi-sales contient grp-bi-imbrique, qui le contient.
+    original = app_module.GROUPES[sales]["membres"]
+    monkeypatch.setitem(
+        app_module.GROUPES[sales],
+        "membres",
+        [*original, {"type": "#microsoft.graph.group", "id": imbrique}],
+    )
+
+    corps = client.get(f"/v1.0/groups/{imbrique}/transitiveMembers", headers=auth)
+    assert corps.status_code == 200

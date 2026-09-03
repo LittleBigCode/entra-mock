@@ -63,6 +63,37 @@ paths:
           content:
             application/json:
               schema: {}
+  /v1.0/groups/{group_id}/transitiveMembers:
+    get:
+      summary: Membres Transitifs
+      description: 'L''appartenance EFFECTIVE, groupes imbriqués aplatis — comme Graph.
+
+
+        Même enveloppe, même curseur opaque, même `$select` que `/members` : seule
+
+        la composition de la collection change. C''est ce qui permet à un
+
+        consommateur de basculer d''un chemin à l''autre sans réécrire sa pagination.'
+      operationId: membres_transitifs_v1_0_groups__group_id__transitiveMembers_get
+      parameters:
+      - name: group_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Group Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /v1.0/groups/{group_id}/members:
     get:
       summary: Membres
