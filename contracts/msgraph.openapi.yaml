@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Microsoft Graph mock (Entra groups)
-  version: 0.2.0
+  version: 0.3.0
 paths:
   /health:
     get:
@@ -20,8 +20,13 @@ paths:
   /{tenant}/oauth2/v2.0/token:
     post:
       summary: Token
-      description: Flux client credentials — le vrai chemin d'authentification de
+      description: 'Flux client credentials — le vrai chemin d''authentification de
         Graph.
+
+
+        Les quatre refus reproduisent des réponses OBSERVÉES le 2026-09-03 : statut,
+
+        code OAuth2 et code AADSTS. Aucun n''est inventé.'
       operationId: token__tenant__oauth2_v2_0_token_post
       parameters:
       - name: tenant
@@ -45,6 +50,12 @@ paths:
   /v1.0/groups:
     get:
       summary: Groupes
+      description: 'Les groupes, PAGINÉS — comme Graph, qui en sert 100 par page.
+
+
+        Un client qui suivrait `@odata.nextLink` sur `/members` mais pas ici ne
+
+        verrait que les `GROUPS_PAGE_SIZE` premiers groupes, sans la moindre erreur.'
       operationId: groupes_v1_0_groups_get
       responses:
         '200':
@@ -62,7 +73,16 @@ paths:
 
         pipeline qui ne suivrait pas ce lien ne verrait que les PAGE_SIZE premiers
 
-        membres, sans la moindre erreur. C''est pourquoi la page est petite.'
+        membres, sans la moindre erreur. C''est pourquoi la page est petite.
+
+
+        Les membres ne sont PAS tous des personnes : `members` est déclaré
+
+        `Collection(graph.directoryObject)` dans le CSDL officiel, et rend aussi
+
+        bien un groupe imbriqué qu''un principal de service. Les deux sont sans UPN,
+
+        et un consommateur doit les traiter différemment.'
       operationId: membres_v1_0_groups__group_id__members_get
       parameters:
       - name: group_id

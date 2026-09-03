@@ -14,22 +14,43 @@ plus rien démontrer.
 
 from __future__ import annotations
 
+from conftest import tous_les_groupes
+
 
 def _tous_les_membres(client, auth) -> set[str]:
     membres: set[str] = set()
-    for groupe in client.get("/v1.0/groups", headers=auth).json()["value"]:
+    for groupe in tous_les_groupes(client, auth):
         url = f"/v1.0/groups/{groupe['id']}/members"
         while url:
             corps = client.get(url, headers=auth).json()
-            membres.update(m["userPrincipalName"] for m in corps["value"])
+            # `.get` et non `[...]` : tous les membres ne sont PAS des
+            # personnes — `members` rend des `directoryObject`, dont un groupe
+            # imbriqué et un principal de service, sans UPN ni l'un ni l'autre.
+            membres.update(
+                m["userPrincipalName"] for m in corps["value"] if m.get("userPrincipalName")
+            )
             suivant = corps.get("@odata.nextLink")
             url = suivant.replace("http://testserver", "") if suivant else ""
     return membres
 
 
 def test_les_quatre_groupes_des_quatre_regles(client, auth):
-    noms = {g["displayName"] for g in client.get("/v1.0/groups", headers=auth).json()["value"]}
-    assert noms == {"grp-bi-rh", "grp-bi-sales", "grp-bi-direction", "grp-comex"}
+    noms = {g["displayName"] for g in tous_les_groupes(client, auth)}
+    assert {"grp-bi-rh", "grp-bi-sales", "grp-bi-direction", "grp-comex"} <= noms
+
+
+def test_le_groupe_imbrique_n_ajoute_aucune_appartenance(client, auth):
+    """Il éprouve le DIAGNOSTIC du consommateur, pas son modèle d'autorisation.
+
+    `grp-bi-imbrique` ne contient qu'un groupe et un principal de service :
+    aucun UPN, donc aucune ligne d'appartenance. Les attentes aval sont
+    inchangées — ce qui change, c'est qu'un consommateur doit maintenant
+    distinguer « objet sans UPN attendu » de « groupe imbriqué, donc des
+    ayants droit invisibles ».
+    """
+    groupes = {g["displayName"]: g["id"] for g in tous_les_groupes(client, auth)}
+    membres = client.get(f"/v1.0/groups/{groupes['grp-bi-imbrique']}/members", headers=auth).json()
+    assert all("userPrincipalName" not in m for m in membres["value"])
 
 
 def test_le_domaine_est_celui_du_jeu_realiste(client, auth):
@@ -62,9 +83,7 @@ def test_comex_recoupe_direction(client, auth):
     """La règle 4 (visibilité totale) porte sur une personne qui a AUSSI une
     portée par groupe : c'est ce recoupement qui éprouve la déduplication de
     l'union des règles."""
-    groupes = {
-        g["displayName"]: g["id"] for g in client.get("/v1.0/groups", headers=auth).json()["value"]
-    }
+    groupes = {g["displayName"]: g["id"] for g in tous_les_groupes(client, auth)}
     comex = client.get(f"/v1.0/groups/{groupes['grp-comex']}/members", headers=auth).json()
     direction = client.get(
         f"/v1.0/groups/{groupes['grp-bi-direction']}/members", headers=auth

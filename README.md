@@ -58,10 +58,14 @@ allocation: boond 8010, entra 8011, linkedin 8012, ga 8013.)
 
 | Endpoint | Notes |
 |---|---|
-| `POST /{tenant}/oauth2/v2.0/token` | client-credentials flow; **form-encoded body** (JSON is refused, as in the real API); yields a Bearer with a real expiry |
-| `GET /v1.0/groups` | the four groups, `value[]` + `@odata.context` |
-| `GET /v1.0/groups/{id}/members` | members paginated by **opaque cursor** (`@odata.nextLink`); last page carries no link |
+| `POST /{tenant}/oauth2/v2.0/token` | client-credentials flow; **form-encoded body** (JSON is refused, as in the real API); yields a Bearer with a real expiry. Refusals use the **flat OAuth2 envelope with an `AADSTS…` code** — *not* the Graph one |
+| `GET /v1.0/groups` | the groups, **paginated by opaque cursor** like the members |
+| `GET /v1.0/groups/{id}/members` | members paginated by **opaque cursor** (`@odata.nextLink`); last page carries no link; not all members are people |
 | `GET /health` | unauthenticated probe |
+
+Both collections honour `$select` (and report it on the next link); without it
+they return a **wide default property set**, as Graph does. `429` can be
+injected. Errors carry `innerError.request-id`.
 
 Tokens are checked for real: audience **and** expiry. That is what makes the
 client-side renewal path testable — the main operational difference with
@@ -113,6 +117,9 @@ member — silently, without any error.
 | `ENTRA_CLIENT_SECRET` | `change-me-entra` | client secret |
 | `ENTRA_MOCK_TOKEN_TTL` | `3600` | token lifetime in seconds — lower it to rehearse renewal |
 | `ENTRA_MOCK_PAGE_SIZE` | `1` | members per page (see above) |
+| `ENTRA_MOCK_GROUPS_PAGE_SIZE` | `2` | groups per page — same reasoning as above |
+| `ENTRA_MOCK_THROTTLE_EVERY` | `0` (off) | return `429` on every Nth authenticated call |
+| `ENTRA_MOCK_RETRY_AFTER` | `1` | the `Retry-After` served with those `429` |
 | `ENTRA_MOCK_UPN_DOMAIN` | `boreal-conseil.example` | UPN domain — must match the BoondManager mock's dataset (see above) |
 | `ENTRA_MOCK_HOST` / `_PORT` | `0.0.0.0` / `8000` | uvicorn bind |
 
@@ -132,5 +139,28 @@ The version is bumped in lockstep in `pyproject.toml`,
 
 | Version | Dataset |
 |---|---|
-| `0.2.0` | UPNs of boondmanager-mock's **`realiste`** dataset (`@boreal-conseil.example`) — the current one |
+| `0.3.0` | same UPNs, plus `grp-bi-imbrique` (a nested group + a service principal, no membership). Faithful to five dialect facts the mock used to get wrong — the current one |
+| `0.2.0` | UPNs of boondmanager-mock's **`realiste`** dataset (`@boreal-conseil.example`) |
 | `0.1.0` | the historical `@ent.fr` dataset, superseded; it joins with nothing since boondmanager-mock 0.3.0 |
+
+### What 0.3.0 fixes, and how it was found
+
+`insights360:scripts/relever_dialecte_entra.py` challenges this mock against
+the **real** service — and needs **no credential at all** to do it. Microsoft
+publishes its dialect: `GET graph.microsoft.com/v1.0/$metadata` is the official
+CSDL (1.8 MB, 200 OK, anonymous), and both hosts show their error envelopes to
+anyone they refuse. Run on 2026-09-03, it found five divergences, every one of
+them in the same direction — **the mock was kinder than the provider**, so a
+consumer could be green here and broken in production:
+
+| # | The mock said | Microsoft actually says |
+|---|---|---|
+| 1 | token errors in the Graph envelope `{"error": {"code", "message"}}` | the **flat OAuth2** envelope with an `AADSTS…` code, `error_codes`, `trace_id` |
+| 2 | errors without `innerError` | `error.innerError` carries `date`, `request-id`, `client-request-id` — the id Microsoft support asks for |
+| 3 | all groups in one page | `/v1.0/groups` **paginates** (100 per page) |
+| 4 | four properties per member | the **default property set** — 79 are declared on `user` in the CSDL |
+| 5 | never throttles | `429` + `Retry-After`, and an extraction's call profile is what triggers it |
+
+The rule that comes out of it, and it holds for the four mocks of the
+ecosystem: **a mock must be at least as strict as the provider.** A permissive
+mock does not make CI greener, it makes it less informative.
