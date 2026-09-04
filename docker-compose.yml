@@ -19,7 +19,7 @@
 services:
   entra-mock:
     build: .
-    image: entra-mock:0.2.0
+    image: entra-mock:0.3.0
     ports:
       - "8011:8000"
     environment:
